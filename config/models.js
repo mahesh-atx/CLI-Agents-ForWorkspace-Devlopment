@@ -13,7 +13,7 @@ const MODELS = {
     temperature: 1.0,
     topP: 1.0,
     isMultimodal: true,
-    extraParams: { chat_template_kwargs: { thinking: false } },
+    extraParams: { chat_template_kwargs: { thinking: true } },
   },
 
   qwen: {
@@ -38,6 +38,30 @@ const MODELS = {
     topP: 1.0,
     isMultimodal: true,
     extraParams: { chat_template_kwargs: { enable_thinking: false } },
+  },
+
+  llama70b: {
+    id: "meta/llama-3.1-70b-instruct",
+    name: "Llama 3.1 70B",
+    description: "Meta Open Weights",
+    envKey: "NVIDIA_API_KEY_LLAMA70B",
+    maxTokens: 4096,
+    temperature: 0.7,
+    topP: 1.0,
+    isMultimodal: false,
+    extraParams: {},
+  },
+
+  llama405b: {
+    id: "meta/llama-3.1-405b-instruct",
+    name: "Llama 3.1 405B",
+    description: "Meta Frontier Model",
+    envKey: "NVIDIA_API_KEY_LLAMA405B",
+    maxTokens: 4096,
+    temperature: 0.7,
+    topP: 1.0, 
+    isMultimodal: false,
+    extraParams: {},
   },
 };
 

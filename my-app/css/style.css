@@ -1,0 +1,337 @@
+/* Custom Animations & Styles */
+
+/* Grain Overlay Animation */
+@keyframes grain {
+    0%, 100% { transform: translate(0, 0); }
+    10% { transform: translate(-5%, -10%); }
+    20% { transform: translate(-15%, 5%); }
+    30% { transform: translate(7%, -25%); }
+    40% { transform: translate(-5%, 25%); }
+    50% { transform: translate(-15%, 10%); }
+    60% { transform: translate(15%, 0%); }
+    70% { transform: translate(0%, 15%); }
+    80% { transform: translate(3%, 35%); }
+    90% { transform: translate(-10%, 10%); }
+}
+
+.grain-overlay {
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
+    animation: grain 8s steps(10) infinite;
+}
+
+/* Custom Animations */
+@keyframes fadeUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateY(100%);
+    }
+    to {
+        transform: translateY(0);
+    }
+}
+
+.animate-fade-up {
+    opacity: 0;
+    animation: fadeUp 0.8s ease-out forwards;
+}
+
+.animate-slide-in {
+    animation: slideIn 0.8s ease-out forwards;
+}
+
+/* Custom Cursor */
+.custom-cursor {
+    transform: translate(-50%, -50%);
+}
+
+.custom-cursor-follower {
+    transform: translate(-50%, -50%);
+}
+
+/* Smooth Scroll Behavior */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Selection Color */
+::selection {
+    background-color: #171717;
+    color: #fafafa;
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #fafafa;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #404040;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #171717;
+}
+
+/* Focus Styles */
+*:focus-visible {
+    outline: 2px solid #171717;
+    outline-offset: 2px;
+}
+
+/* Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+    
+    .grain-overlay {
+        animation: none;
+    }
+}
+
+/* Text Reveal Animation Classes */
+.reveal-text {
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.6s ease-out, transform 0.6s ease-out;
+}
+
+.reveal-text.visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* Skill Bar Animation */
+.skill-bar {
+    width: 0;
+    transition: width 1.5s ease-out;
+}
+
+.skill-bar.animate {
+    width: var(--width);
+}
+
+/* Hover Image Scale */
+.group:hover .scale-on-hover {
+    transform: scale(1.05);
+}
+
+/* Magnetic Button Effect */
+.magnetic-btn {
+    transition: transform 0.3s ease-out;
+}
+
+/* Loading State */
+.loading {
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+/* Form Focus States */
+input:focus,
+textarea:focus {
+    box-shadow: 0 0 0 3px rgba(23, 23, 23, 0.1);
+}
+
+/* Mobile Menu Animation */
+#mobile-menu {
+    transition: transform 0.3s ease-in-out;
+}
+
+#mobile-menu.open {
+    transform: translateX(0);
+}
+
+/* Navigation Background on Scroll */
+#navbar.scrolled {
+    background-color: rgba(250, 250, 250, 0.95);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+/* Project Card Hover */
+.project-card {
+    transition: transform 0.3s ease-out, box-shadow 0.3s ease-out;
+}
+
+.project-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+}
+
+/* Typing Cursor */
+.typing-cursor::after,
+.typewriter-text::after {
+ content: '|';
+ animation: blink 1s step-end infinite;
+ display: inline-block;
+}
+
+@keyframes blink {
+ 50% { opacity: 0; }
+}
+
+/* Typewriter Effect */
+.typewriter-text {
+ overflow: hidden;
+ border-right: 2px solid transparent;
+ white-space: nowrap;
+ width: 0;
+ animation: 
+ typing 2s steps(20, end) 1s forwards,
+ removeBorder 0s 2s forwards;
+}
+
+@keyframes typing {
+ from { width: 0; }
+ to { width: 100%; }
+}
+
+@keyframes removeBorder {
+ to { border-right-color: transparent; }
+}
+
+/* Floating Elements Animation */
+.floating-element {
+ transition: transform 0.3s ease-out;
+ will-change: transform;
+}
+
+/* Hero Image Micro-interactions */
+.hero-image-wrapper {
+ transition: transform 0.3s ease-out;
+ will-change: transform;
+}
+
+.hero-image-container:hover .hero-image-wrapper {
+ transform: perspective(1000px) rotateX(5deg) rotateY(-5deg) scale(1.02);
+}
+
+/* Social Icon Micro-interactions */
+.social-icon {
+ position: relative;
+ overflow: hidden;
+}
+
+.social-icon::before {
+ content: '';
+ position: absolute;
+ inset: 0;
+ background: currentColor;
+ border-radius: 50%;
+ transform: scale(0);
+ opacity: 0.1;
+ transition: transform 0.3s ease-out;
+}
+
+.social-icon:hover::before {
+ transform: scale(1);
+}
+
+/* Magnetic Button Effect */
+.magnetic-btn {
+ transition: transform 0.2s ease-out;
+}
+
+.magnetic-btn-bg {
+ transform: scale(0);
+ transition: transform 0.4s ease-out;
+}
+
+.magnetic-btn:hover .magnetic-btn-bg {
+ transform: scale(2);
+}
+
+/* Magnetic Text Effect */
+.magnetic-text {
+ display: inline-block;
+ transition: transform 0.2s ease-out;
+}
+
+/* Status Card Glow */
+.status-card::before {
+ content: '';
+ position: absolute;
+ inset: -2px;
+ background: linear-gradient(45deg, transparent, rgba(23, 23, 23, 0.1), transparent);
+ border-radius: inherit;
+ z-index: -1;
+ opacity: 0;
+ transition: opacity 0.3s;
+}
+
+.status-card:hover::before {
+ opacity: 1;
+}
+
+/* Hero Parallax Container */
+#hero-section {
+ perspective: 1000px;
+}
+
+/* Scroll Indicator Bounce Enhancement */
+@keyframes bounceEnhanced {
+ 0%, 100% {
+ transform: translateY(0) scaleY(1);
+ }
+ 50% {
+ transform: translateY(-10px) scaleY(1.1);
+ }
+ 75% {
+ transform: translateY(-5px) scaleY(0.95);
+ }
+}
+
+.animate-bounce-enhanced {
+ animation: bounceEnhanced 2s ease-in-out infinite;
+}
+
+/* Text Split Animation Support */
+.char {
+ display: inline-block;
+ transform: translateY(100%);
+ opacity: 0;
+ transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.5s;
+}
+
+.char.visible {
+ transform: translateY(0);
+ opacity: 1;
+}
+
+/* Experience Timeline Hover */
+#experience .group:hover .absolute.-left-\[9px\] {
+ transform: scale(1.3);
+ box-shadow: 0 0 0 4px rgba(23, 23, 23, 0.1);
+}
+
+/* Smooth transition for all interactive elements */
+a, button {
+ transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Grain intensity adjustment on dark mode */
+@media (prefers-color-scheme: dark) {
+ .grain-overlay {
+ opacity: 0.05;
+ }
+}

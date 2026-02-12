@@ -5,6 +5,7 @@ import readline from "readline";
 import sharp from "sharp";
 import { createPatch } from "diff";
 import { execSync } from "child_process";
+import chalk from "chalk";
 import { getModel, listModels } from "./config/models.js";
 import { createClient } from "./config/apiClient.js";
 
@@ -429,6 +430,131 @@ function cleanText(text) {
     .replace(/,\s*]/g, "]");    // trailing comma before ]
 }
 
+// Helper to recover truncated JSON (e.g. if max_tokens hit)
+function recoverTruncatedJSON(text) {
+  // 1. Find the "files" array
+  const filesMatch = text.match(/"files"\s*:\s*\[/);
+  if (!filesMatch) return null;
+  
+  const startIndex = filesMatch.index + filesMatch[0].length;
+  let nesting = 0;
+  let lastCompleteObjIndex = -1;
+  let inString = false;
+  let escape = false;
+
+  for (let i = startIndex; i < text.length; i++) {
+    const char = text[i];
+    
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    
+    if (char === '\\') {
+      escape = true;
+      continue;
+    }
+    
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    
+    if (!inString) {
+      if (char === '{') {
+        nesting++;
+      } else if (char === '}') {
+        nesting--;
+        // If we just closed a file object (nesting went 1 -> 0 assumed relative to array start? 
+        // Actually, inside array, objects are at nesting 1?
+        // Let's track absolute nesting. 
+        // We start inside "files": [ ... <- nesting is unknown relative to root, but we can track relative.
+      }
+    }
+  }
+  
+  // Complexity of bracket tracking is high.
+  // SIMPLER HEURISTIC: Find last occurrence of "}," which signifies end of a file object,
+  // followed by a "path" or end of array.
+  
+  // Look for pattern:  }, \n\s* { "path"
+  // Or just find the last "}," and cut there.
+  
+  const lastClosing = text.lastIndexOf("},"); // Finds last strict object end
+  const lastClosingBracket = text.lastIndexOf("}"); // Finds very last bracket (maybe partial)
+
+  // If text ends abruptly, we might have ... "conte
+  
+  // Try to find the last occurrence of `    },` or `  },` which usually ends a file block in pretty-print
+  // Regex for object end: /\}\s*,\s*\{/
+  // We want to slice up to the last successful "}," and add "] }".
+  
+  // Let's try progressively cutting from the end until it parses.
+  // Limit attempts to avoid infinite loop.
+  
+  let buffer = text;
+  // Try adding closing chars
+  try { return JSON.parse(buffer + "]}"); } catch {}
+  try { return JSON.parse(buffer + "\"]}]}"); } catch {} // Close string, obj, array, root
+  return null; 
+}
+
+// STRONGER RECOVERY: Regex Extraction
+function extractFilesRegex(text) {
+    const files = [];
+    // Regex to find "path": "...", ... "content": "..."
+    // We capture content robustly? No, content can contain anything.
+    // But we know 'content' starts with ", and ends with " (not escaped) followed by }
+    
+    // Iterative approach:
+    // 1. Find "path": "..."
+    // 2. Find "action": "..."
+    // 3. Find "content": "..."
+    // 4. Extract content string, unescape it.
+    
+    const pathRegex = /"path"\s*:\s*"([^"]+)"/g;
+    let match;
+    while ((match = pathRegex.exec(text)) !== null) {
+         // for each path, try to find the content
+         const path = match[1];
+         // Find 'content': starting after this path
+         const contentStartSearch = text.indexOf('"content"', match.index);
+         if (contentStartSearch === -1) continue;
+         
+         const contentValueStart = text.indexOf('"', contentStartSearch + 9) + 1;
+         // Now read until unescaped quote
+         let content = "";
+         let p = contentValueStart;
+         while (p < text.length) {
+             if (text[p] === '\\') {
+                 // escape char
+                 if (p + 1 < text.length) {
+                    content += text[p] + text[p+1]; // keep escape for JSON.parse later
+                    p += 2;
+                    continue;
+                 }
+             }
+             if (text[p] === '"') {
+                 // End of content string?
+                 // Check if it's followed by } or ,
+                 // A heuristic: usually followed by \n or space or }
+                 break;
+             }
+             content += text[p];
+             p++;
+         }
+         
+         // Unescape the content
+         try {
+            const unescaped = JSON.parse(`"${content}"`);
+            files.push({ path, action: "create", content: unescaped });
+         } catch(e) {
+            // failed to parse content, maybe truncated
+         }
+    }
+    return files.length > 0 ? { files } : null;
+}
+
 function parseJSON(text) {
   if (!text || typeof text !== "string") return null;
 
@@ -445,32 +571,28 @@ function parseJSON(text) {
 
   // Attempt 3: clean + parse whole text
   try {
-    let fixed = text
-      .replace(/```json/g, "")
-      .replace(/```/g, "");
-    return JSON.parse(cleanText(fixed.trim()));
+    const cleaned = cleanText(text);
+    return JSON.parse(cleaned);
   } catch {}
 
-  // Attempt 4: find first { ... last } in the text
+  // Attempt 4: Find first { and last }
   try {
-    const start = text.indexOf("{");
-    const end = text.lastIndexOf("}");
-    if (start !== -1 && end > start) {
-      return JSON.parse(cleanText(text.slice(start, end + 1)));
+    const firstOpen = text.indexOf("{");
+    const lastClose = text.lastIndexOf("}");
+    if (firstOpen !== -1 && lastClose !== -1) {
+      return JSON.parse(cleanText(text.slice(firstOpen, lastClose + 1)));
     }
   } catch {}
 
-  // Attempt 5: find JSON array pattern for files
+  // Attempt 5: Recover from Truncation (Regex Extraction)
   try {
-    const planMatch = text.match(/"plan"\s*:\s*\[/);
-    const filesMatch = text.match(/"files"\s*:\s*\[/);
-    if (planMatch || filesMatch) {
-      // There IS json-like content, try aggressive cleanup
-      let aggressive = text
-        .replace(/^[^{]*/, "")     // remove everything before first {
-        .replace(/[^}]*$/, "");    // remove everything after last }
-      return JSON.parse(cleanText(aggressive));
-    }
+      // Only try recovery if other methods failed and we suspect truncation (large or partial)
+      // Actually, just try it.
+      const recovered = extractFilesRegex(text);
+      if (recovered && recovered.files.length > 0) {
+          console.log(`\n⚠️  JSON parse failed, but recovered ${recovered.files.length} files from content.`);
+          return recovered;
+      }
   } catch {}
 
   return null;
@@ -546,40 +668,65 @@ if (messages.length === 0) {
   messages = [{
     role: "system",
     content: `
-You are DevAI — Autonomous Software Engineer.
+You are DevAI — an Elite Senior Software Engineer and Architect.
 
-Capabilities:
-- Understand existing codebase
-- Plan before coding
-- Modify existing files using SURGICAL EDITS (search/replace blocks)
-- Create new files and folders
-- Debug errors
-- Refactor multiple files
-- Detect project type
-- Learn user's coding style from memory
+==================== 1. TECH STACK STRATEGY ====================
+- **ANALYZE FIRST**: Check input for specific tech (Bootstrap, jQuery, Vue, Python, Raw CSS).
+- **IF SPECIFIED**: STRICTLY follow user request. Do NOT override.
+- **IF NOT SPECIFIED**: Default to Modern Stack:
+  - Frontend: React (Vite) + Tailwind CSS (via CDN for single files)
+  - Backend: Node.js (Express)
+  - Scripting: Node.js or Python
+- **QUALITY**: Produce Production-Ready, clean, responsive, premium code.
+- **NO PLACEHOLDERS**: Never write "TODO" or "Add logic here". Write the logic.
 
-ALWAYS RETURN VALID JSON ONLY — no markdown, no explanation outside JSON.
+==================== 2. OUTPUT FORMAT (STRICT) ====================
+- RETURN VALID JSON ONLY.
+- NO markdown code blocks (no \`\`\`).
+- NO preamble or postscript.
+- IF NOT JSON → INVALID.
 
-For EDITING existing files, use surgical search/replace edits:
+==================== 3. FILE EDITING RULES (CRITICAL) ====================
+- **PREFER EDITS**: Use "action": "edit" for existing files.
+- **CONTEXT**: "search" block must be UNIQUE enough to find the location.
+- **WHITESPACE**: Preserve exact indentation in "search" blocks.
+- **SCOPE**: Only rewrite the whole file ("action": "create") if changing >50% of the content.
+
+==================== 4. DESIGN STANDARDS ====================
+- Aesthetic: Modern, clean, premium (Apple/Stripe inspired).
+- Layout: Fully responsive (mobile-first).
+- Styling: Use CSS variables or Tailwind classes.
+
+==================== 5. JSON STRUCTURES ====================
+
+// OPTION A: NEW FILE / FULL REWRITE
 {
- "plan": ["step1","step2"],
- "files":[
-   {
-     "path": "relative/path/file.js",
-     "action": "edit",
-     "edits": [
-       { "search": "exact old code block to find", "replace": "new replacement code" }
-     ]
-   }
- ],
- "instructions":[ "how to run manually" ]
+  "plan": ["Scaffold component", "Add styles"],
+  "files": [
+    { "path": "src/components/Hero.jsx", "action": "create", "content": "..." }
+  ]
 }
 
-For CREATING new files, use full content:
+// OPTION B: SURGICAL EDIT (Search & Replace)
 {
- "files":[
-   { "path": "new/file.js", "action": "create", "content": "full file content" }
- ]
+  "plan": ["Fix validation bug"],
+  "files": [
+    {
+      "path": "src/utils/validate.js",
+      "action": "edit",
+      "edits": [
+        { 
+          "search": "  if (x < 0) return false;", 
+          "replace": "  if (x <= 0) return false;" 
+        }
+      ]
+    }
+  ]
+}
+
+// OPTION C: SHELL COMMANDS / INSTRUCTIONS
+{
+  "instructions": ["npm install framer-motion", "npm run dev"]
 }
 
 You can mix edits and creates in the same response.
@@ -640,19 +787,47 @@ while (true) {
 
   const smartContext = buildSmartContext(projectDir, input);
 
-  const userText = `User request: ${input}\nProject: ${detectProjectType(projectDir)}\nProject folder: ${projectDir}\n\n${smartContext}`;
+  // Full prompt for the AI (includes context)
+  
+  // --- NEW CODE START ---
+  const styleHint = `
+  REMINDER: 
+  1. If I mentioned a specific tech stack, use it. 
+  2. If not, use the Modern Default (React/Tailwind).
+  3. Make the UI look premium and modern (Apple/Stripe aesthetic) unless I asked for "Retro" or "Basic".
+  `;
 
-  const content = imgBase64
+  // Full prompt for the AI (includes context)
+  const fullUserText = `User request: ${input}\n${styleHint}\nProject: ${detectProjectType(projectDir)}\nProject folder: ${projectDir}\n\n${smartContext}`;
+  // --- NEW CODE END ---
+  
+  const apiContent = imgBase64
     ? [
-        { type: "text", text: userText },
+        { type: "text", text: fullUserText },
         { type: "image_url", image_url: { url: imgBase64 } }
       ]
-    : userText;
+    : fullUserText;
 
-  messages.push({ role: "user", content });
-  trimMemory();
+  // Minimal prompt for history (excludes massive context bloat)
+  const historyContent = imgBase64
+    ? [
+        { type: "text", text: input },
+        { type: "image_url", image_url: { url: imgBase64 } }
+      ]
+    : input;
 
-  process.stdout.write("DevAI: Planning & coding");
+  // Prepare messages for this run: History + Current Full Prompt
+  const apiMessages = [...messages, { role: "user", content: apiContent }];
+
+  // Spinner for waiting
+  let spinnerInt;
+  const spinnerChars = ["|", "/", "-", "\\"];
+  let spIndex = 0;
+  
+  process.stdout.write("DevAI: Planning & coding  ");
+  spinnerInt = setInterval(() => {
+    process.stdout.write(`\rDevAI: Planning & coding ${spinnerChars[spIndex++ % 4]} `);
+  }, 100);
 
   let reply = "";
 
@@ -661,7 +836,7 @@ while (true) {
       // Use streaming to avoid timeout on large responses
       const stream = await client.chat.completions.create({
         model: modelConfig.id,
-        messages,
+        messages: apiMessages,
         temperature: modelConfig.temperature,
         top_p: modelConfig.topP,
         max_tokens: modelConfig.maxTokens,
@@ -673,41 +848,44 @@ while (true) {
       let chunkCount = 0;
       const detectedFiles = new Set();
 
-      // Live progress: show detected file paths as they stream in
-      let progressTimer = setInterval(() => {
-        process.stdout.write(".");
-      }, 3000);
 
       for await (const chunk of stream) {
+        // Clear spinner on first chunk
+        if (spinnerInt) {
+            clearInterval(spinnerInt);
+            spinnerInt = null;
+            process.stdout.write("\rDevAI: Planning & coding ... \n");
+        }
+
         chunkCount++;
-        const delta = chunk.choices?.[0]?.delta?.content;
-        if (delta) {
-          chunks += delta;
-          // Try to detect file paths as they appear in the stream
-          const pathMatches = chunks.match(/"path"\s*:\s*"([^"]+)"/g);
-          if (pathMatches) {
-            for (const m of pathMatches) {
-              const fp = m.match(/"path"\s*:\s*"([^"]+)"/)[1];
-              if (!detectedFiles.has(fp)) {
-                detectedFiles.add(fp);
-                clearInterval(progressTimer);
-                process.stdout.write(`\n  📦 Generating: ${fp}`);
-                progressTimer = setInterval(() => process.stdout.write("."), 3000);
-              }
-            }
-          }
+        const delta = chunk.choices?.[0]?.delta;
+        
+        // Handle Reasoning (Thinking)
+        if (delta?.reasoning_content) {
+          process.stdout.write(chalk.gray(delta.reasoning_content));
+        }
+
+        // Handle Content
+        if (delta?.content) {
+          chunks += delta.content;
+          // Don't print raw JSON content to terminal
+          // distinct from reasoning
+          process.stdout.write(`\rGenerating response... (${chunks.length} chars)`);
         }
       }
-      clearInterval(progressTimer);
+      // clearInterval(progressTimer); // Removed
+      process.stdout.write("\n"); // Newline after progress line
       reply = chunks;
 
       if (reply.trim()) {
-        console.log(` ✓ (${reply.length} chars)`);
+        console.log(` ✓ Received full response.`);
         break;
       }
       console.log(`\n⚠️  Empty response (got ${chunkCount} chunks), retrying (${i + 1}/3)...`);
     } catch (e) {
-      console.log(`\n❌ Attempt ${i + 1}/3 failed: ${e.message}`);
+      if (spinnerInt) { clearInterval(spinnerInt); spinnerInt = null; process.stdout.write("\n"); }
+      console.log(`\n❌ Error: ${e.message}`);
+      if (i === 2) console.log("Aborting after 3 attempts.");
       if (e.status === 401) {
         console.log("   API key is invalid. Check your .env file.");
         break;
@@ -722,12 +900,14 @@ while (true) {
 
   if (!reply.trim()) {
     console.log("\n⚠️  No response received. Try again or switch model.\n");
-    // Remove the failed user message from memory
-    messages.pop();
+    // No need to pop messages; we haven't pushed the user message yet
     continue;
   }
 
+  // Update memory with minimal user message + assistant reply
+  messages.push({ role: "user", content: historyContent });
   messages.push({ role: "assistant", content: reply });
+  trimMemory();
   
   try {
     fs.writeFileSync(memoryPath, JSON.stringify(messages, null, 2));

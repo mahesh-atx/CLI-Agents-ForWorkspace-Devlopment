@@ -1,0 +1,20 @@
+{
+  "name": "devai",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "DevAI - Autonomous AI coding assistant",
+  "scripts": {
+    "devai": "node devai.js",
+    "chat": "node chat.js"
+  },
+  "dependencies": {
+    "boxen": "^8.0.1",
+    "chalk": "^5.6.2",
+    "diff": "^5.0.0",
+    "dotenv": "^16.0.0",
+    "inquirer": "^13.2.2",
+    "openai": "^4.0.0",
+    "ora": "^9.3.0",
+    "sharp": "^0.33.0"
+  }
+}

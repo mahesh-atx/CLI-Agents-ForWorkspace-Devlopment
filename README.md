@@ -1,6 +1,6 @@
 # CLI-Agents-ForWorkspace-Development
 
-🚀 **DevAI** — An autonomous CLI-based AI software engineer that understands your codebase, plans changes, writes code, and auto-fixes errors.
+ **DevAI** — An autonomous CLI-based AI software engineer that understands your codebase, plans changes, writes code, and auto-fixes errors.
 
 ## Features
 

@@ -4,6 +4,7 @@ import path from "path";
 import readline from "readline";
 import sharp from "sharp";
 import { createPatch } from "diff";
+import { execSync } from "child_process";
 import { getModel, listModels } from "./config/models.js";
 import { createClient } from "./config/apiClient.js";
 
@@ -12,6 +13,7 @@ dotenv.config();
 /* ================= CONFIG ================= */
 
 const MEMORY_FILE = ".devai_memory.json";
+let customBuildCmd = null;  // User-set build command via /build <cmd>
 
 /* ================= INPUT ================= */
 
@@ -153,9 +155,82 @@ function buildSmartContext(dir, userInput) {
   return context;
 }
 
+/* ================= FUZZY SEARCH ================= */
+
+function similarity(a, b) {
+  // Levenshtein-based similarity ratio (0..1)
+  const la = a.length, lb = b.length;
+  if (la === 0 || lb === 0) return 0;
+  if (la > 5000 || lb > 5000) {
+    // For very long strings, use line-based comparison
+    const aLines = a.split("\n").map(l => l.trim()).filter(Boolean);
+    const bLines = b.split("\n").map(l => l.trim()).filter(Boolean);
+    let matches = 0;
+    for (const line of aLines) {
+      if (bLines.includes(line)) matches++;
+    }
+    return matches / Math.max(aLines.length, bLines.length);
+  }
+  const dp = Array.from({ length: la + 1 }, () => new Array(lb + 1).fill(0));
+  for (let i = 0; i <= la; i++) dp[i][0] = i;
+  for (let j = 0; j <= lb; j++) dp[0][j] = j;
+  for (let i = 1; i <= la; i++) {
+    for (let j = 1; j <= lb; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return 1 - dp[la][lb] / Math.max(la, lb);
+}
+
+function fuzzyFindAndReplace(fileContent, search, replace) {
+  // Exact match first
+  const idx = fileContent.indexOf(search);
+  if (idx !== -1) {
+    return fileContent.slice(0, idx) + replace + fileContent.slice(idx + search.length);
+  }
+
+  // Trimmed-whitespace match: normalize leading whitespace
+  const searchLines = search.split("\n").map(l => l.trimEnd());
+  const fileLines = fileContent.split("\n");
+  for (let i = 0; i <= fileLines.length - searchLines.length; i++) {
+    let match = true;
+    for (let j = 0; j < searchLines.length; j++) {
+      if (fileLines[i + j].trimEnd() !== searchLines[j]) { match = false; break; }
+    }
+    if (match) {
+      const before = fileLines.slice(0, i);
+      const after = fileLines.slice(i + searchLines.length);
+      return [...before, replace, ...after].join("\n");
+    }
+  }
+
+  // Fuzzy sliding window match (similarity > 0.8)
+  const searchNorm = search.trim();
+  const windowSize = searchLines.length;
+  let bestScore = 0, bestIdx = -1;
+  for (let i = 0; i <= fileLines.length - windowSize; i++) {
+    const window = fileLines.slice(i, i + windowSize).join("\n").trim();
+    const score = similarity(searchNorm, window);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+  if (bestScore >= 0.8 && bestIdx >= 0) {
+    const before = fileLines.slice(0, bestIdx);
+    const after = fileLines.slice(bestIdx + windowSize);
+    console.log(`    ↳ Fuzzy matched (${(bestScore * 100).toFixed(0)}% similar)`);
+    return [...before, replace, ...after].join("\n");
+  }
+
+  return null; // No match found
+}
+
 /* ================= PATCH WRITER ================= */
 
-function patchFile(projectDir, filePath, newContent) {
+function patchFile(projectDir, filePath, newContent, edits = null) {
   // Sanitize path — prevent writing outside project folder
   const normalized = path.normalize(filePath).replace(/^(\.\.[/\\])+/, "");
   const fullPath = path.resolve(projectDir, normalized);
@@ -170,6 +245,37 @@ function patchFile(projectDir, filePath, newContent) {
     // Ensure the directory exists
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
 
+    // === SURGICAL EDIT MODE (search/replace) ===
+    if (edits && Array.isArray(edits) && edits.length > 0) {
+      if (!fs.existsSync(fullPath)) {
+        console.log("  ❌ Cannot edit (file doesn't exist):", normalized);
+        return;
+      }
+      let content = fs.readFileSync(fullPath, "utf8");
+      let applied = 0, failed = 0;
+
+      for (const edit of edits) {
+        if (!edit.search || typeof edit.replace !== "string") {
+          console.log("    ⚠️  Skipped invalid edit (missing search/replace)");
+          failed++;
+          continue;
+        }
+        const result = fuzzyFindAndReplace(content, edit.search, edit.replace);
+        if (result !== null) {
+          content = result;
+          applied++;
+        } else {
+          console.log(`    ⚠️  Could not find match for search block (${edit.search.split("\n").length} lines)`);
+          failed++;
+        }
+      }
+
+      fs.writeFileSync(fullPath, content, "utf8");
+      console.log(`  🔧 Surgical edit: ${normalized} (${applied} applied, ${failed} failed)`);
+      return;
+    }
+
+    // === FULL OVERWRITE MODE (backward-compatible) ===
     if (!fs.existsSync(fullPath)) {
       fs.writeFileSync(fullPath, newContent, "utf8");
       console.log("  📄 Created:", normalized);
@@ -188,6 +294,126 @@ function patchFile(projectDir, filePath, newContent) {
   } catch (e) {
     console.log("  ❌ Failed to write:", normalized, "—", e.message);
   }
+}
+
+/* ================= BUILD COMMAND DETECTION ================= */
+
+function detectBuildCommand(dir) {
+  if (customBuildCmd) return customBuildCmd;
+
+  try {
+    const pkgPath = path.join(dir, "package.json");
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+      const scripts = pkg.scripts || {};
+      // Priority: test > build > lint > start
+      if (scripts.test && scripts.test !== 'echo "Error: no test specified" && exit 1') return "npm test";
+      if (scripts.build) return "npm run build";
+      if (scripts.lint) return "npm run lint";
+      return null;
+    }
+    if (fs.existsSync(path.join(dir, "requirements.txt"))) return "python -m pytest";
+    if (fs.existsSync(path.join(dir, "Cargo.toml"))) return "cargo build";
+    if (fs.existsSync(path.join(dir, "go.mod"))) return "go build ./...";
+  } catch {}
+  return null;
+}
+
+/* ================= SELF-DEBUGGER LOOP ================= */
+
+async function selfDebugLoop(projectDir, messages, client, modelConfig, maxAttempts = 3) {
+  const buildCmd = detectBuildCommand(projectDir);
+  if (!buildCmd) {
+    console.log("\n⚠️  No build/test command detected.");
+    console.log("   Use: /build <command>  to set one (e.g. /build npm test)");
+    return;
+  }
+
+  console.log(`\n🔨 Running: ${buildCmd}`);
+  console.log("─".repeat(50));
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const output = execSync(buildCmd, {
+        cwd: projectDir,
+        encoding: "utf8",
+        timeout: 60000,
+        stdio: ["pipe", "pipe", "pipe"]
+      });
+      console.log(output.slice(0, 1000));
+      console.log(`\n✅ Build/test PASSED on attempt ${attempt}!`);
+      return true;
+    } catch (e) {
+      const errorOutput = (e.stderr || "") + (e.stdout || "") || e.message;
+      const truncatedError = errorOutput.slice(0, 2000);
+      console.log(`\n🔴 Build FAILED (attempt ${attempt}/${maxAttempts}):`);
+      console.log(truncatedError.slice(0, 500));
+
+      if (attempt >= maxAttempts) {
+        console.log(`\n❌ Max attempts (${maxAttempts}) reached. Manual fix needed.`);
+        return false;
+      }
+
+      // Feed error back to AI for auto-fix
+      console.log(`\n🤖 Asking AI to fix (attempt ${attempt + 1}/${maxAttempts})...`);
+      process.stdout.write("DevAI: Analyzing error");
+
+      const smartContext = buildSmartContext(projectDir, "fix build error");
+      messages.push({
+        role: "user",
+        content: `BUILD/TEST FAILED. Fix this error:\n\n\`\`\`\n${truncatedError}\`\`\`\n\nProject context:\n${smartContext}\n\nReturn the fixed file(s) as JSON. Use surgical edits when possible.`
+      });
+
+      let reply = "";
+      try {
+        const stream = await client.chat.completions.create({
+          model: modelConfig.id,
+          messages,
+          temperature: modelConfig.temperature,
+          top_p: modelConfig.topP,
+          max_tokens: modelConfig.maxTokens,
+          stream: true,
+          ...modelConfig.extraParams
+        });
+
+        for await (const chunk of stream) {
+          const delta = chunk.choices?.[0]?.delta?.content;
+          if (delta) reply += delta;
+        }
+      } catch (apiErr) {
+        console.log(`\n❌ AI API error: ${apiErr.message}`);
+        return false;
+      }
+
+      if (!reply.trim()) {
+        console.log("\n⚠️  AI returned empty response.");
+        return false;
+      }
+
+      console.log(" ✓");
+      messages.push({ role: "assistant", content: reply });
+
+      const parsed = parseJSON(reply);
+      if (!parsed || !parsed.files) {
+        console.log("⚠️  Could not parse AI fix response.");
+        return false;
+      }
+
+      // Apply fixes
+      console.log(`\n📂 Applying ${parsed.files.length} fix(es):`);
+      for (const f of parsed.files) {
+        if (!f.path) continue;
+        if (f.edits && Array.isArray(f.edits)) {
+          patchFile(projectDir, f.path, null, f.edits);
+        } else if (typeof f.content === "string") {
+          patchFile(projectDir, f.path, f.content);
+        }
+      }
+
+      console.log(`\n🔄 Retrying build...`);
+    }
+  }
+  return false;
 }
 
 /* ================= JSON REPAIR ================= */
@@ -325,24 +551,44 @@ You are DevAI — Autonomous Software Engineer.
 Capabilities:
 - Understand existing codebase
 - Plan before coding
-- Modify existing files (patch, not overwrite)
+- Modify existing files using SURGICAL EDITS (search/replace blocks)
 - Create new files and folders
 - Debug errors
 - Refactor multiple files
 - Detect project type
 - Learn user's coding style from memory
 
-ALWAYS RETURN VALID JSON ONLY — no markdown, no explanation outside JSON:
+ALWAYS RETURN VALID JSON ONLY — no markdown, no explanation outside JSON.
 
+For EDITING existing files, use surgical search/replace edits:
 {
  "plan": ["step1","step2"],
- "files":[ { "path":"relative/path/file.js","content":"full file code here" } ],
+ "files":[
+   {
+     "path": "relative/path/file.js",
+     "action": "edit",
+     "edits": [
+       { "search": "exact old code block to find", "replace": "new replacement code" }
+     ]
+   }
+ ],
  "instructions":[ "how to run manually" ]
 }
 
+For CREATING new files, use full content:
+{
+ "files":[
+   { "path": "new/file.js", "action": "create", "content": "full file content" }
+ ]
+}
+
+You can mix edits and creates in the same response.
+
 CRITICAL RULES:
 - File paths MUST be relative (e.g. "src/index.js", "routes/auth.js")
-- The "content" field must contain the COMPLETE file content
+- For edits: the "search" field must contain the EXACT code block currently in the file
+- For creates: the "content" field must contain the COMPLETE file content
+- Keep search blocks as small as possible — only include the lines being changed plus 1-2 lines of context
 - Do NOT wrap the JSON in markdown code fences
 - Do NOT use curly/smart quotes — use straight quotes only
 - Do NOT add any text before or after the JSON
@@ -363,6 +609,17 @@ console.log("Type 'exit' to quit\n");
 while (true) {
   const input = await ask("You: ");
   if (!input || input.toLowerCase() === "exit") break;
+
+  // Handle /build command
+  if (input.startsWith("/build")) {
+    const customCmd = input.slice(6).trim();
+    if (customCmd) {
+      customBuildCmd = customCmd;
+      console.log(`\n✓ Build command set: ${customBuildCmd}`);
+    }
+    await selfDebugLoop(projectDir, messages, client, modelConfig);
+    continue;
+  }
 
   const imgPath = await ask("Image (optional / none): ");
   let imgBase64 = null;
@@ -506,11 +763,19 @@ while (true) {
   if (parsed.files && Array.isArray(parsed.files)) {
     console.log(`\n📂 Writing ${parsed.files.length} file(s):`);
     for (const f of parsed.files) {
-      if (!f.path || typeof f.content !== "string") {
-        console.log("  ❌ Skipped invalid file entry (missing path or content)");
+      if (!f.path) {
+        console.log("  ❌ Skipped invalid file entry (missing path)");
         continue;
       }
-      patchFile(projectDir, f.path, f.content);
+      // Surgical edit mode: use search/replace edits
+      if (f.edits && Array.isArray(f.edits)) {
+        patchFile(projectDir, f.path, null, f.edits);
+      } else if (typeof f.content === "string") {
+        // Full overwrite mode (backward-compatible)
+        patchFile(projectDir, f.path, f.content);
+      } else {
+        console.log("  ❌ Skipped invalid file entry (missing content or edits)");
+      }
     }
   }
 

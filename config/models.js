@@ -10,6 +10,7 @@ const MODELS = {
     description: "High Performance, Multi-modal",
     envKey: "NVIDIA_API_KEY_KIMI",
     maxTokens: 16384,
+    contextLimit: 500000, // ~128k tokens
     temperature: 1.0,
     topP: 1.0,
     isMultimodal: true,
@@ -22,6 +23,7 @@ const MODELS = {
     description: "Specialized for Code",
     envKey: "NVIDIA_API_KEY_QWEN",
     maxTokens: 4096,
+    contextLimit: 120000, // ~30k tokens
     temperature: 0.7,
     topP: 0.8,
     isMultimodal: false,
@@ -34,6 +36,7 @@ const MODELS = {
     description: "Multi-modal Original",
     envKey: "NVIDIA_API_KEY_GLM",
     maxTokens: 16384,
+    contextLimit: 500000, // ~128k tokens
     temperature: 1.0,
     topP: 1.0,
     isMultimodal: true,
@@ -46,6 +49,7 @@ const MODELS = {
     description: "Meta Open Weights",
     envKey: "NVIDIA_API_KEY_LLAMA70B",
     maxTokens: 8192,
+    contextLimit: 500000, // ~128k tokens
     temperature: 0.7,
     topP: 1.0,
     isMultimodal: false,
@@ -58,6 +62,7 @@ const MODELS = {
     description: "Meta Frontier Model",
     envKey: "NVIDIA_API_KEY_LLAMA405B",
     maxTokens: 8192,
+    contextLimit: 500000, // ~128k tokens
     temperature: 0.7,
     topP: 1.0, 
     isMultimodal: false,

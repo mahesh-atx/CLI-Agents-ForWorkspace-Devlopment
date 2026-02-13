@@ -54,7 +54,6 @@ const BINARY_EXTS = new Set([
 
 const SKIP_NAMES = new Set(["node_modules", ".git", ".devai_memory.json", "_devai_last_response.txt"]);
 const CONFIG_FILES = new Set(["package.json", ".env", ".env.example", "tsconfig.json", "vite.config.js", "webpack.config.js"]);
-const MAX_CONTEXT_CHARS = 12000;
 
 function collectFiles(dir) {
   const files = [];
@@ -112,7 +111,7 @@ function scoreRelevance(file, keywords) {
   return score;
 }
 
-function buildSmartContext(dir, userInput) {
+function buildSmartContext(dir, userInput, maxChars = 12000) {
   const files = collectFiles(dir);
   if (files.length === 0) return "(empty project)";
 
@@ -136,14 +135,14 @@ function buildSmartContext(dir, userInput) {
 
   for (const f of scored) {
     const fullEntry = `--- ${f.path} ---\n${f.content}\n`;
-    if (used + fullEntry.length < MAX_CONTEXT_CHARS) {
+    if (used + fullEntry.length < maxChars) {
       fullFiles.push(fullEntry);
       used += fullEntry.length;
     } else {
       // Add a short preview instead
       const preview = f.content.split("\n").slice(0, 5).join("\n");
       const previewEntry = `--- ${f.path} (preview) ---\n${preview}\n`;
-      if (used + previewEntry.length < MAX_CONTEXT_CHARS) {
+      if (used + previewEntry.length < maxChars) {
         previews.push(previewEntry);
         used += previewEntry.length;
       }
@@ -359,7 +358,7 @@ async function selfDebugLoop(projectDir, messages, client, modelConfig, maxAttem
       console.log(`\n🤖 Asking AI to fix (attempt ${attempt + 1}/${maxAttempts})...`);
       process.stdout.write("DevAI: Analyzing error");
 
-      const smartContext = buildSmartContext(projectDir, "fix build error");
+      const smartContext = buildSmartContext(projectDir, "fix build error", modelConfig.contextLimit || 12000);
       messages.push({
         role: "user",
         content: `BUILD/TEST FAILED. Fix this error:\n\n\`\`\`\n${truncatedError}\`\`\`\n\nProject context:\n${smartContext}\n\nReturn the fixed file(s) as JSON. Use surgical edits when possible.`
@@ -839,7 +838,7 @@ while (true) {
     }
   }
 
-  const smartContext = buildSmartContext(projectDir, input);
+  const smartContext = buildSmartContext(projectDir, input, modelConfig.contextLimit || 12000);
 
   // Full prompt for the AI (includes context)
   

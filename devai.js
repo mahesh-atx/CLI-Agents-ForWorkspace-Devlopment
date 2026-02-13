@@ -430,6 +430,60 @@ function cleanText(text) {
     .replace(/,\s*]/g, "]");    // trailing comma before ]
 }
 
+/* ================= GIT ROLLBACK SYSTEM ================= */
+
+function gitCheckpoint() {
+  try {
+    // 1. Check if git repo exists
+    execSync("git rev-parse --is-inside-work-tree", { stdio: "ignore" });
+  } catch {
+    return null; // Not a git repo
+  }
+
+  try {
+    // 2. Check if there are changes to stash
+    const status = execSync("git status --porcelain").toString().trim();
+    if (!status) return "clean"; // Nothing to backup, just a clean state
+
+    // 3. Create Backup: Stash everything (including untracked) but keep the index
+    // We use 'push' to save it, then 'apply' to bring it back to working dir
+    console.log(chalk.gray(" 💾 Creating safety checkpoint..."));
+    execSync('git stash push --include-untracked -m "DevAI_Auto_Checkpoint"');
+    execSync('git stash apply'); // Restore immediately so AI sees the code
+    return "stashed";
+  } catch (e) {
+    console.log(chalk.yellow("⚠️  Git checkpoint failed: " + e.message));
+    return null;
+  }
+}
+
+function gitRestore(checkpointType) {
+  try {
+    console.log(chalk.gray(" ↺ Rolling back changes..."));
+    // 1. Wipe all current changes (AI's changes)
+    execSync("git reset --hard HEAD", { stdio: "ignore" });
+    execSync("git clean -fd", { stdio: "ignore" }); // Remove new files created by AI
+
+    // 2. If we had a stash, restore it
+    if (checkpointType === "stashed") {
+      execSync("git stash pop", { stdio: "ignore" }); // Restore user's WIP
+    }
+    console.log(chalk.green(" ✅ Rollback complete."));
+  } catch (e) {
+    console.log(chalk.red("❌ Rollback failed: " + e.message));
+    console.log("   (You may need to manually run 'git stash pop')");
+  }
+}
+
+function gitDiscard(checkpointType) {
+  if (checkpointType === "stashed") {
+    // We accepted the changes, so we drop the backup stash to keep the list clean
+    try {
+      execSync("git stash drop", { stdio: "ignore" });
+    } catch {}
+  }
+}
+
 // Helper to recover truncated JSON (e.g. if max_tokens hit)
 function recoverTruncatedJSON(text) {
   // 1. Find the "files" array
@@ -941,6 +995,10 @@ while (true) {
   }
 
   if (parsed.files && Array.isArray(parsed.files)) {
+    
+    // 1. Create Checkpoint
+    const checkpoint = gitCheckpoint();
+
     console.log(`\n📂 Writing ${parsed.files.length} file(s):`);
     for (const f of parsed.files) {
       if (!f.path) {
@@ -955,6 +1013,24 @@ while (true) {
         patchFile(projectDir, f.path, f.content);
       } else {
         console.log("  ❌ Skipped invalid file entry (missing content or edits)");
+      }
+    }
+
+    // 3. Verification Prompt (Only if checkpoint was possible)
+    if (checkpoint) {
+      const userAction = await ask(chalk.yellow("\n👀 Review changes. Keep them? (y/undo): "));
+      
+      if (userAction.toLowerCase() === "undo" || userAction.toLowerCase() === "n") {
+        // 4a. UNDO
+        gitRestore(checkpoint);
+        // Remove the AI's response from memory so it forgets the bad code
+        messages.pop(); 
+        messages.pop(); 
+        console.log(chalk.gray("   (Memory rewound)"));
+      } else {
+        // 4b. KEEP
+        gitDiscard(checkpoint); // Drop the stash, we are keeping the new state
+        console.log(chalk.green("   ✓ Changes accepted."));
       }
     }
   }
